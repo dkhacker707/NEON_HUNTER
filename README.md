@@ -4,11 +4,10 @@ Dive deep into the neon shadows of the web with **NEONHUNTER v3** — the ultima
 
 ![NEONHUNTER Screenshot](ScreenShot.png)
 
-![Cyberpunk Neon Interface](https://thumbs.dreamstime.com/b/k-cyberpunk-glitch-art-retro-futuristic-neon-grid-red-blue-tech-interface-sci-fi-digital-background-holographic-data-stream-s-383459587.jpg)
 
 ![Futuristic Hacker Terminal](https://images.stockcake.com/public/5/b/a/5baa1747-7383-4703-9a18-39d0c69b2248_large/futuristic-danger-alert-stockcake.jpg)
 
-![Neon HUD Elements](https://thumbs.dreamstime.com/b/set-hud-interface-elements-lines-circles-pointers-frames-bar-download-web-applications-set-hud-interface-elements-lines-111984297.jpg)
+
 
 ## Features 🚀
 - **Direct Fuzzing** → Blast payloads on any URL instantly 🧨
