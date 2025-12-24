@@ -1,0 +1,16 @@
+param=value1&param=value2
+param[]=value1
+param[]=value1&param[]=value2
+param[]=value1&param=value2
+param=value1&param[]=value2
+param=value1%26other=value2
+param[key1]=value1&param[key2]=value2
+{
+    "test": "user",
+    "test": "admin"
+}
+id=1&id=2
+role=user&role=admin
+access=denied&access=granted
+page=home&page=admin
+user=guest&user=admin
